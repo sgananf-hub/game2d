@@ -1,0 +1,351 @@
+# duelo_lanzas_sprites_turnos.py
+import pygame
+import sys
+import os
+from math import atan2, degrees, sqrt
+
+pygame.init()
+WIDTH, HEIGHT = 1000, 600
+screen = pygame.display.set_mode((WIDTH, HEIGHT))
+pygame.display.set_caption("Duelo de Lanzas - Sprites y Turnos")
+
+# Rutas de imágenes (ya subidas en el contenedor)
+
+
+BASE_DIR = r"C:\Users\Juan\Desktop\2D GAME"
+PLAYER1_IMG = os.path.join(BASE_DIR, "Jugador1.png")
+PLAYER2_IMG = os.path.join(BASE_DIR, "Jugador2.png")
+
+# Colores
+SKY = (135, 206, 235)
+GROUND = (120, 70, 20)
+WHITE = (255, 255, 255)
+BLACK = (0, 0, 0)
+
+clock = pygame.time.Clock()
+FPS = 60
+
+# --- Config física ---
+GRAVITY = 0.8
+GROUND_HEIGHT = 50
+
+# --- Clase Jugador usando imagen ---
+class Player(pygame.sprite.Sprite):
+    def _init_(self, img_path, x, y, lado):
+        super()._init_()
+        # Cargar imagen original (con transparencia)
+        img = pygame.image.load(img_path).convert_alpha()
+        # Escalar a tamaño razonable
+        scale = 0.9
+        w = int(img.get_width() * scale)
+        h = int(img.get_height() * scale)
+        self.original_image = pygame.transform.smoothscale(img, (w, h))
+        self.image = self.original_image.copy()
+        self.rect = self.image.get_rect(midbottom=(x, y))
+        self.pos = pygame.Vector2(self.rect.topleft)
+        self.vel = pygame.Vector2(0, 0)
+        self.speed = 5
+        self.on_ground = True
+        self.lado = lado  # 'izq' o 'der'
+        self.vida = 100
+        # Ángulo y potencia para lanzar (valores iniciales)
+        self.angle = 45  # grados
+        self.power = 18  # magnitud inicial
+        # Control de turno: solo puede disparar cuando turno == su_num
+        self.can_shoot = True
+
+        # Para "animación" básica: bob (pequeño movimiento vertical) al caminar
+        self.walk_bob = 0
+        self.walk_dir = 1
+
+    def update(self, keys, active):  # active = True si es su turno para moverse
+        if active:
+            # Movimiento lateral por jugador
+            if self.lado == "izq":
+                left = keys[pygame.K_a]
+                right = keys[pygame.K_d]
+                jump = keys[pygame.K_w]
+            else:
+                left = keys[pygame.K_LEFT]
+                right = keys[pygame.K_RIGHT]
+                jump = keys[pygame.K_UP]
+
+            if left:
+                self.vel.x = -self.speed
+                self._bob(True)
+                # girar sprite si es necesario
+                if self.lado == "der":
+                    self.image = pygame.transform.flip(self.original_image, True, False)
+                else:
+                    self.image = self.original_image.copy()
+            elif right:
+                self.vel.x = self.speed
+                self._bob(True)
+                if self.lado == "izq":
+                    self.image = pygame.transform.flip(self.original_image, True, False)
+                else:
+                    self.image = self.original_image.copy()
+            else:
+                self.vel.x = 0
+                self._bob(False)
+
+            # Salto
+            if jump and self.on_ground:
+                self.vel.y = -15
+                self.on_ground = False
+        else:
+            # No puede moverse cuando no es su turno (puedes cambiar esto si quieres movimiento libre)
+            self.vel.x = 0
+            self._bob(False)
+
+        # Aplicar gravedad
+        self.vel.y += GRAVITY
+        # Actualizar posición
+        self.pos += self.vel
+        self.rect.topleft = self.pos
+
+        # Colisión con suelo
+        if self.rect.bottom >= HEIGHT - GROUND_HEIGHT:
+            self.rect.bottom = HEIGHT - GROUND_HEIGHT
+            self.pos.y = self.rect.top
+            self.vel.y = 0
+            self.on_ground = True
+
+        # Limitar dentro de la pantalla
+        if self.rect.left < 0:
+            self.rect.left = 0
+            self.pos.x = self.rect.left
+        if self.rect.right > WIDTH:
+            self.rect.right = WIDTH
+            self.pos.x = self.rect.left
+
+    def _bob(self, walking):
+        # simple bob para simular caminar (no es una animación por frames)
+        if walking:
+            self.walk_bob += 0.4 * self.walk_dir
+            if abs(self.walk_bob) > 3:
+                self.walk_dir *= -1
+        else:
+            # volver a posición neutra
+            if self.walk_bob > 0.1:
+                self.walk_bob -= 0.6
+            elif self.walk_bob < -0.1:
+                self.walk_bob += 0.6
+            else:
+                self.walk_bob = 0
+        # aplicar pequeño offset vertical (transforma imagen para dibujo usando rect)
+        # no modificamos self.image porque eso alteraría la colisión; usaremos rect offset al dibujar
+
+    def draw(self, surface):
+        # dibuja la imagen con el bob aplicado (sin cambiar rect real)
+        draw_pos = (self.rect.x, self.rect.y + self.walk_bob)
+        surface.blit(self.image, draw_pos)
+
+    def shoot(self):
+        """Genera una lanza si puede disparar (y bloquea hasta que el turno cambie)"""
+        if not self.can_shoot:
+            return None
+        # Posición inicial de salida de la lanza: frente al personaje según lado
+        offset_x = 50 if self.lado == "izq" else -50
+        start_x = self.rect.centerx + offset_x
+        start_y = self.rect.centery - 20
+        direction = 1 if self.lado == "izq" else -1
+        self.can_shoot = False
+        return Spear(start_x, start_y, self.angle, self.power, direction)
+
+# --- Clase de la lanza con física parabólica ---
+class Spear(pygame.sprite.Sprite):
+    def _init_(self, x, y, angle_deg, power, direction):
+        super()._init_()
+        self.color = (80, 40, 10)
+        self.image = pygame.Surface((40, 8), pygame.SRCALPHA)
+        pygame.draw.rect(self.image, self.color, (0, 0, 40, 8))
+        # pequeña punta
+        pygame.draw.polygon(self.image, (200, 200, 200), [(40, 4), (48, 0), (48, 8)])
+        self.original_image = self.image.copy()
+        self.rect = self.image.get_rect(center=(x, y))
+        # velocidad inicial a partir de angle y power
+        import math
+        ang_rad = math.radians(angle_deg)
+        vx = math.cos(ang_rad) * power * direction
+        vy = -math.sin(ang_rad) * power
+        self.pos = pygame.Vector2(x, y)
+        self.vel = pygame.Vector2(vx, vy)
+        self.active = True
+
+    def update(self):
+        if not self.active:
+            return
+        # gravedad
+        self.vel.y += GRAVITY
+        self.pos += self.vel
+        self.rect.center = (int(self.pos.x), int(self.pos.y))
+        # rotar imagen según vector velocidad para darle sensación de trayectoria
+        angle = degrees(atan2(-self.vel.y, self.vel.x))
+        self.image = pygame.transform.rotate(self.original_image, angle)
+        self.rect = self.image.get_rect(center=self.rect.center)
+
+        # Si cae al suelo o sale de pantalla, dejar inactiva
+        if self.rect.bottom >= HEIGHT - GROUND_HEIGHT or self.rect.right < 0 or self.rect.left > WIDTH:
+            self.active = False
+
+    def draw(self, surface):
+        if self.active:
+            surface.blit(self.image, self.rect)
+
+# --- Funciones UI ---
+font = pygame.font.SysFont("Arial", 22)
+def draw_ui(p1, p2, turno):
+    # fondo para UI
+    # vidas
+    pygame.draw.rect(screen, (200, 30, 30), (20, 20, p1.vida * 2, 18))
+    pygame.draw.rect(screen, (30, 30, 200), (WIDTH - 220, 20, p2.vida * 2, 18))
+    pygame.draw.rect(screen, BLACK, (20, 20, 200, 18), 2)
+    pygame.draw.rect(screen, BLACK, (WIDTH - 220, 20, 200, 18), 2)
+
+    # Turno
+    ttxt = font.render(f"Turno: Jugador {turno}", True, BLACK)
+    screen.blit(ttxt, (WIDTH//2 - ttxt.get_width()//2, 18))
+
+    # Ángulo/potencia del jugador actual
+    if turno == 1:
+        txt = font.render(f"Ángulo: {p1.angle}°  Potencia: {p1.power}", True, BLACK)
+    else:
+        txt = font.render(f"Ángulo: {p2.angle}°  Potencia: {p2.power}", True, BLACK)
+    screen.blit(txt, (WIDTH//2 - txt.get_width()//2, 46))
+
+# --- Instrucciones / mapping de teclas ---
+"""
+Controles:
+
+Jugador 1 (izq):
+  Mover: A / D
+  Saltar: W
+  Disparar (en su turno): ESPACIO
+  Ajustar ángulo: Q (subir) / E (bajar)
+  Ajustar potencia: R (subir) / F (bajar)
+
+Jugador 2 (der):
+  Mover: FLECHA IZQ / FLECHA DER
+  Saltar: FLECHA ARRIBA
+  Disparar (en su turno): ENTER
+  Ajustar ángulo: K (subir) / L (bajar)
+  Ajustar potencia: O (subir) / P (bajar)
+"""
+
+def main():
+    # crear jugadores
+    p1 = Player(PLAYER1_IMG, 150, HEIGHT - GROUND_HEIGHT, "izq")
+    p2 = Player(PLAYER2_IMG, WIDTH - 150, HEIGHT - GROUND_HEIGHT, "der")
+
+    spears = []  # lista de lanzas activas
+
+    turno = 1  # 1 o 2
+    # Inicial: ambos pueden moverse, pero can_shoot controlará el lanzamiento por turno.
+    p1.can_shoot = True
+    p2.can_shoot = True
+
+    running = True
+    while running:
+        dt = clock.tick(FPS) / 1000.0
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+
+            # Teclas disparo / ajuste: usamos KEYDOWN para que ajuste sea por pulsación
+            if event.type == pygame.KEYDOWN:
+                # Ajustes jugador 1 (Q/E ángulo, R/F potencia, espacio disparo)
+                if turno == 1:
+                    if event.key == pygame.K_q:
+                        p1.angle = min(80, p1.angle + 3)
+                    elif event.key == pygame.K_e:
+                        p1.angle = max(10, p1.angle - 3)
+                    elif event.key == pygame.K_r:
+                        p1.power = min(30, p1.power + 1)
+                    elif event.key == pygame.K_f:
+                        p1.power = max(6, p1.power - 1)
+                    elif event.key == pygame.K_SPACE:
+                        # disparar si puede
+                        spear = p1.shoot()
+                        if spear:
+                            spears.append((spear, 1))  # guardamos lanza y quién disparó
+                            # cambiar turno inmediatamente: jugador contrario podrá mover/disparar cuando la lanza termine
+                            turno = 2
+
+                # Ajustes jugador 2 (K/L ángulo, O/P potencia, ENTER disparo)
+                elif turno == 2:
+                    if event.key == pygame.K_k:
+                        p2.angle = min(80, p2.angle + 3)
+                    elif event.key == pygame.K_l:
+                        p2.angle = max(10, p2.angle - 3)
+                    elif event.key == pygame.K_o:
+                        p2.power = min(30, p2.power + 1)
+                    elif event.key == pygame.K_p:
+                        p2.power = max(6, p2.power - 1)
+                    elif event.key == pygame.K_RETURN:
+                        spear = p2.shoot()
+                        if spear:
+                            spears.append((spear, 2))
+                            turno = 1
+
+        keys = pygame.key.get_pressed()
+
+        # Solo el jugador cuyo turno es activo puede moverse (si quieres permitir ambos moverse, cambia active=True)
+        p1_active = (turno == 1)
+        p2_active = (turno == 2)
+
+        # Actualizar jugadores
+        p1.update(keys, p1_active)
+        p2.update(keys, p2_active)
+
+        # Actualizar lanzas
+        for i, (spear, owner) in enumerate(spears[:]):
+            spear.update()
+            # colisión con jugador contrario
+            if spear.active:
+                if owner == 1 and spear.rect.colliderect(p2.rect):
+                    p2.vida -= 15
+                    spear.active = False
+                elif owner == 2 and spear.rect.colliderect(p1.rect):
+                    p1.vida -= 15
+                    spear.active = False
+            else:
+                # si la lanza dejó de estar activa, permitimos al jugador que la lanzó volver a disparar
+                if owner == 1:
+                    p1.can_shoot = True
+                else:
+                    p2.can_shoot = True
+                spears.remove((spear, owner))
+
+        # Dibujado
+        screen.fill(SKY)
+        # suelo
+        pygame.draw.rect(screen, GROUND, (0, HEIGHT - GROUND_HEIGHT, WIDTH, GROUND_HEIGHT))
+        # jugadores
+        p1.draw(screen)
+        p2.draw(screen)
+        # lanzas
+        for spear, _owner in spears:
+            spear.draw(screen)
+
+        # UI
+        draw_ui(p1, p2, turno)
+
+        pygame.display.flip()
+
+        # verificar fin de juego
+        if p1.vida <= 0 or p2.vida <= 0:
+            ganador = 2 if p1.vida <= 0 else 1
+            # pantalla final simple
+            screen.fill(WHITE)
+            big = pygame.font.SysFont("Arial", 48).render(f"¡Jugador {ganador} gana!", True, BLACK)
+            screen.blit(big, (WIDTH//2 - big.get_width()//2, HEIGHT//2 - 30))
+            pygame.display.flip()
+            pygame.time.delay(2500)
+            running = False
+
+    pygame.quit()
+    sys.exit()
+
+if _name_ == "_main_":
+    main()
